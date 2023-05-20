@@ -1,0 +1,34 @@
+import talib as ta                                                      # 引入python技术分析模块talib
+import numpy as np                                                      # 引入python数据分析模块numpy
+
+start = '2022-06-01'                                                    # 回测起始时间
+end = '2022-08-01'                                                      # 回测结束时间
+capital_base = 1000000                                                  # 回测账户资金
+bench_mark = '000300.SSE'                                               # 回测基准指标
+freq = 'd'                                                              # 策略类型，'d'表示日间策略使用日线回测，'m'表示日内策略使用分钟线回测
+securities = static_securities_pool(['000001.SZSE'])                    # 证券池，支持动态，静态和指定代码三种方式
+
+# 回测初始化函数，该函数会在正式回测进行之前调用一次
+def initialize(context):
+    # 回测参数设置
+    set_commission(PerValue(cost=0.0003))                               # 设置策略手续费模型，示例为根据成交金额收取万分之三的费用
+    slippage_model = VolumeShareSlippage(0.5,0.1)                       # 构造策略滑点模型，示例为成交比例模式，限制成交比例为0.5，价格影响因子为0.1
+    set_slippage(equities = slippage_model)                             # 设置策略滑点模型
+    set_cancel_policy(EODCancel())                                      # 设置自动撤单策略，示例为未结订单每日盘后自动撤销
+    
+    # 用户变量设置
+    context.my_asset = '000001.SZSE'                                    # 设置目标证券，可用在handle_data函数中使用
+    
+# 策略运行逻辑函数，每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
+def handle_data(context,data):
+    position = get_position(context.my_asset)                           # 获取目标证券持仓
+    volume = 0 if position == None else position['volume']              # 获取目标证券持仓
+    cp = data.history(context.my_asset,['close'],30,'d')['close']       # 获取目标证券历史收盘价信息，用于计算策略信号
+    ma5 = ta.MA(np.array(cp),5)                                         # 计算目标证券5日均线数据
+    ma13 = ta.MA(np.array(cp),13)                                       # 计算目标证券13日均线数据 
+
+    can_trade = data.can_trade(context.my_asset)                        # 判断标的是否可以进行交易
+    if ma5[-2] < ma13[-2] and ma5[-1] > ma13[-1] and volume == 0:       # 5日均线上穿13日均线且持仓为0，证券可交易则买入8成仓
+        if can_trade:order_target_percent(context.my_asset,0.8,0)
+    elif ma5[-2] > ma13[-2] and ma5[-1] < ma13[-1] and volume != 0:     # 5日均线下穿13日均线且持仓不为0，证券可交易则卖出持仓
+        if can_trade:order_target_percent(context.my_asset,0,0)

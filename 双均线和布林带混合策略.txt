@@ -1,0 +1,170 @@
+import numpy as np
+import datetime
+import pandas as pd
+import QtAPI.QtDataAPI as api
+from qtc.api import*
+# 引入python数据分析模块numpy
+class Account:
+    def __init__(self, money, basket, price):
+        self.money = money
+        self.basket = basket
+        self.price = price
+        self.basket = {}
+
+    def buy(self, name, amount, price):
+        self.money = self.money - price*amount
+        if name in self.basket:
+            self.basket[name] += amount
+        else:
+            self.basket.update({name: amount})
+
+    def sell(self, name, amount, price):
+        if name in self.basket and self.basket[name]-amount >= 0:
+            self.basket[name] -= amount
+            self.money = self.money + price*amount
+        else:
+            self.basket[name] = 0
+            self.money = self.money + self.basket[name]*price
+
+w = Account(50000000, {}, 0)
+b = Account(50000000, {}, 0)
+start = '2015-1-01'                                                    # 回测起始时间
+end = '2016-01-01'                                                      # 回测结束时间
+capital_base = 1000000                                                  # 回测账户资金
+bench_mark = '000300.SSE'                                               # 回测基准指标
+freq = 'd'                                                              # 策略类型，'d'表示日间策略使用日线回测，'m'表示日内策略使用分钟线回测
+securities = static_securities_pool('1012003002025.*')
+
+# 证券池，支持动态，静态和指定代码三种方式
+
+# 回测初始化函数，该函数会在正式回测进行之前调用一次
+def initialize(context):
+    # 回测参数设置
+    set_commission(PerValue(cost=0.0003))                               # 设置策略手续费模型，示例为根据成交金额收取万分之三的费用
+    slippage_model = VolumeShareSlippage(0.5,0.1)                       # 构造策略滑点模型，示例为成交比例模式，限制成交比例为0.5，价格影响因子为0.1
+    set_slippage(equities = slippage_model)                             # 设置策略滑点模型
+    set_cancel_policy(EODCancel())                                      # 设置自动撤单策略，示例为未结订单每日盘后自动撤销
+    
+    # 用户变量设置
+    context.my_asset = []
+    context.code_pool = []
+    context.last_month = 0
+    context.run_algo = False
+    context.now_data = 0
+    context.yes_data = 0
+    context.index = 'w'
+    context.open = 0
+    context.w = 0
+    context.b = 0
+    context.day = 0
+#只是一些全局变量
+
+
+                                   
+        
+        # 设置目标证券，可用在handle_data函数中使用
+def before_trading_start(context, data):
+    today = context.get_date().date()
+    begin_14 = (today - datetime.timedelta(days = 30)).strftime('%Y-%m-%d')
+    begin_7 = (today - datetime.timedelta(days = 7)).strftime('%Y-%m-%d')
+    today = today.strftime('%Y-%m-%d')
+    
+    plateIDs = [1012003002025]
+    ret, errMsg, dataCols = api.GetPlateSymbols(plateIDs, api.ESetOper['k_SetUnion'], dateBegin=today, dateEnd=today)
+    dataCols['code'] = dataCols['Symbol'] + '.' + dataCols['Market']#防止重复字符串出现
+    context.securities = dataCols['code'].tolist()
+
+        #以上是获取时间，和股票代码
+        
+    fields = ['Symbol', 'CP']
+    ret, errMsg, cp_14 = get_history_data(context.securities, fields,'k_Day', begin_14, today)
+    ret, errMsg, cp_7 = get_history_data(context.securities, fields,'k_Day', begin_7, today)
+    ret, errMsg, cp_now = get_history_data(context.securities, fields,'k_Day', today, today)
+    mean_14 = cp_14.groupby('Symbol').agg({'CP':'mean'})
+    mean_7 = cp_7.groupby('Symbol').agg({'CP':'mean'})
+    std_14 = cp_14.groupby('Symbol').agg({'CP':'std'})
+    p = np.array(cp_now['CP'])
+    ma = np.array(mean_7['CP'])
+    error = (ma - p)/ma
+    error = list(error)
+    cp_now['error'] = error
+    cp_now['Symbol'] = context.securities
+    cp_now['mean_7'] = mean_7['CP'].values
+    cp_now['mean_14'] = mean_14['CP'].values
+    cp_now['b_up'] = mean_14['CP'].values + 2*std_14['CP'].values
+    cp_now['b_down'] = mean_14['CP'].values - 2*std_14['CP'].values        
+    cp_now = cp_now.sort_values(by='error', ascending=False)
+    context.my_asset = cp_now.iloc[0:10, 0].values
+    context.now_data = cp_now
+#     以上是数据的处理
+
+    if context.open == 0:
+        context.yes_data = cp_now
+        context.open = 1
+#      防止回测的第一天缺失上一日的数据集
+        
+    if context.day < 5:
+        context.day += 1
+    else:
+        if w.money >= b.money:
+            context.index = 'w'
+        else:
+            context.index = 'b'
+        w.money = 50000000
+        w.basket = {}
+        w.price = 0
+        b.money = 50000000
+        b.basket = {}
+        b.price = 0
+#         每五天选择一次策略
+        
+
+
+    
+        
+        
+# 策略运行逻辑函数，每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
+def handle_data(context,data):
+    for i in range(0, 10):
+        cp_now = context.now_data
+        if cp_now.iloc[i,3] > cp_now.iloc[i,4] and context.yes_data.iloc[i,3] < context.yes_data.iloc[i,4]:
+                w.buy(cp_now.iloc[i,0], int(w.money/cp_now.iloc[i,1]/10),cp_now.iloc[i,1])
+        if cp_now.iloc[i,3] < cp_now.iloc[i,4] and context.yes_data.iloc[i,3] > context.yes_data.iloc[i,4] and cp_now.iloc[i,0] in w.basket:
+                w.sell(cp_now.iloc[i,0], w.basket[cp_now.iloc[i,0]], cp_now.iloc[i,1])
+        if cp_now.iloc[i,1] > cp_now.iloc[i,6] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,6]:
+                b.buy(cp_now.iloc[i,0], int(b.money/cp_now.iloc[i,1]/2/10),cp_now.iloc[i,1])
+        if cp_now.iloc[i,1] > cp_now.iloc[i,3] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,3]:
+                b.buy(cp_now.iloc[i,0], int(b.money/cp_now.iloc[i,1]),cp_now.iloc[i,1])
+        if cp_now.iloc[i,1] > cp_now.iloc[i,5] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,5] and cp_now.iloc[i,0] in b.basket:
+                b.sell(cp_now.iloc[i,0], b.basket[cp_now.iloc[i,0]], cp_now.iloc[i,1])
+        if cp_now.iloc[i,1] < cp_now.iloc[i,3] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,3] and cp_now.iloc[i,0] in b.basket:
+                b.sell(cp_now.iloc[i,0], b.basket[cp_now.iloc[i,0]], cp_now.iloc[i,1])
+        context.w = w.money
+        context.b = b.money
+        #以上用于辅助选择策略
+        if context.index == 'w':
+
+            if cp_now.iloc[i,3] > cp_now.iloc[i,4] and context.yes_data.iloc[i,3] < context.yes_data.iloc[i,4]:
+                if data.can_trade(cp_now.iloc[i,0]):order_target_percent(cp_now.iloc[i,0],0.5,0)
+
+                        
+            if cp_now.iloc[i,3] < cp_now.iloc[i,4] and context.yes_data.iloc[i,3] > context.yes_data.iloc[i,4] and cp_now.iloc[i,0] in w.basket:
+                if data.can_trade(cp_now.iloc[i,0]):order_target_percent(cp_now.iloc[i,0],0,0)
+        if context.index == 'b':
+
+            if cp_now.iloc[i,1] > cp_now.iloc[i,6] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,6]:
+                if data.can_trade(cp_now.iloc[i,0]):order_target_percent(cp_now.iloc[i,0],0.5,0)
+
+    
+            if cp_now.iloc[i,1] > cp_now.iloc[i,3] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,3]:
+                if data.can_trade(cp_now.iloc[i,0]):order_target_percent(cp_now.iloc[i,0],0.5,0)
+                        
+            if cp_now.iloc[i,1] > cp_now.iloc[i,5] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,5] and cp_now.iloc[i,0] in b.basket:
+                if data.can_trade(cp_now.iloc[i,0]):order_target_percent(cp_now.iloc[i,0],0,0)
+                
+            if cp_now.iloc[i,1] < cp_now.iloc[i,3] and context.yes_data.iloc[i,1] < context.yes_data.iloc[i,3] and cp_now.iloc[i,0] in b.basket:    
+                if data.can_trade(cp_now.iloc[i,0]):order_target_percent(cp_now.iloc[i,0],0,0)
+#     print(w.money, b.money)
+
+        
+            
